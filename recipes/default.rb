@@ -4,14 +4,26 @@
 #
 # Copyright:: 2017, The Authors, All Rights Reserved.
 include_recipe 'yum-epel'
-
 # execute 'yum_update_all' do
 #   command 'yum update -y'
 # end
+secret = Chef::EncryptedDataBagItem.load_secret('/etc/chef/encrypted_data_bag_secret')
+secrets = Chef::EncryptedDataBagItem.load('credentials', 'hms', secret)
 
-# TODO: Figure out users
-group 'mediaadmins' do
-  gid '1001'
+plex_claim_token = secrets['plex_claim']
+pia_un = secrets['pia_username']
+pia_passwd = secrets['pia_password']
+
+management_package_list = node['hms']['management_package_list']
+management_package_list.each do |package|
+  yum_package package do
+    action :install
+    options '--quiet'
+  end
+end
+
+group node['hms']['admin_group_name'] do
+  gid node['hms']['admin_group_gid']
   action :create
 end
 
@@ -19,44 +31,29 @@ user_list = node['hms']['user_list']
 user_list.each do |usr|
   user usr do
     home "/home/#{usr}"
-    shell '/sbin/nologin'
+    shell node['hms']['default_user_shell']
     comment "User for #{usr} service"
   end
 end
 
-group 'mediaadmins' do
-  gid '1001'
+group node['hms']['admin_group_name'] do
+  gid node['hms']['admin_group_gid']
   action :modify
   members node['hms']['user_list']
   append true
 end
 
-# TODO: Create service directories and where data will be located.
-
 # Create directories
 directory_list = node['hms']['directory_list']
 directory_list.each do |dir_list|
   directory dir_list do
-    owner 'root'
-    group 'mediaadmins'
-    mode '0777'
+    owner node['hms']['directory_owner']
+    group node['hms']['admin_group_name']
+    mode node['hms']['directory_mode']
     action :create
   end
 end
 
-# Land all of the files needed for deluge.
-file_list = %w(client.ovpn ca.rsa.2048.crt crl.rsa.2048.pem)
-file_list.each do |flist|
-  cookbook_file "/home/deluge/openvpn/#{flist}" do
-    source flist
-    owner 'root'
-    group 'mediaadmins'
-    mode '0755'
-    action :create
-  end
-end
-
-# TODO: Install and configure docker
 package 'docker'
 
 service 'docker' do
@@ -68,62 +65,150 @@ docker_image_list.each do |dimg|
   docker_image dimg
 end
 
-docker_container 'delugevpn' do
-  repo 'binhex/arch-delugevpn'
-  cap_add 'NET_ADMIN'
-  port ['8112:8112/tcp', '8118:8118/tcp', '58846:58846/tcp', '8946:58946']
-  env ['VPN_ENABLED=yes', 'VPN_USER=USERNAME', 'VPN_PASS=PASSWORD', 'VPN_REMOTE="us-midwest.privateinternetaccess.com 1198"', 'VPN_PROV=pia', 'STRICT_PORT_FORWARD=no', 'ENABLE_PRIVOXY=yes', 'LAN_NETWORK=192.168.33.0/24', 'NAME_SERVERS=209.222.18.218,209.222.18.222', 'DEBUG=true', 'UMASK=003', 'PUID=1002', 'PGID=1001']
-  volumes ['/home/deluge:/data', '/home/deluge:/config', '/etc/localtime:/etc/localtime:ro' '/home/downloads:/downloads', '/home/media:/media']
-end
-
-docker_container 'plex' do
+docker_container node['hms']['plex']['container_name'] do
+  sensitive true
+  network_mode node['hms']['plex']['network_mode']
   repo 'plexinc/pms-docker'
-  network_mode 'host'
-  env ['TZ="America/Chicago"', 'PLEX_CLAIM="fq4UD27j1sDJnMJLZNsg"', 'PLEX_UID="1003"', 'PLEX_GID="1001"', 'ALLOWED_NETWORKS="10.0.2.0/24"']
-  volumes ['/home/plex:/config', '/home/plex:/transcode', '/home/media:/data']
-  restart_policy 'always'
-  port '32400:32400/tcp'
+  env [
+    "TZ=#{node['hms']['timezone']}",
+    "PLEX_CLAIM=#{plex_claim_token}",
+    'PLEX_UID="1001"',
+    "PLEX_GID=#{node['hms']['admin_group_gid']}",
+    "ALLOWED_NETWORKS=#{node['hms']['plex']['allowed_networks']}",
+  ]
+  volumes node['hms']['plex']['volumes']
+  restart_policy node['hms']['plex']['restart_policy']
+  port node['hms']['plex']['port']
   action :run
 end
 
-docker_container 'radarr' do
+docker_container node['hms']['radarr']['container_name'] do
+  network_mode node['hms']['radarr']['network_mode']
   repo 'linuxserver/radarr'
-  restart_policy 'always'
-  env ['PUID=1004', 'PGID=1001', 'TZ="America/Chicago"']
-  volumes ['/home/radarr:/config', '/home/media:/media', '/home/radarr:/data', '/home/downloads:/downloads']
-  port ['7878:7878/tcp']
+  restart_policy node['hms']['radarr']['restart_policy']
+  env [
+    'PUID=1002',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+  ]
+  volumes node['hms']['radarr']['volumes']
+  port node['hms']['radarr']['port']
   action :run
 end
 
-docker_container 'jackett' do
+docker_container node['hms']['jackett']['container_name'] do
+  network_mode node['hms']['jackett']['network_mode']
   repo 'linuxserver/jackett'
-  restart_policy 'always'
-  env ['PUID=1005', 'PGID=1001', 'TZ="America/Chicago"']
-  volumes ['/home/jackett:/config', '/home/downloads:/downloads']
-  port ['9117:9117/tcp']
+  restart_policy node['hms']['jackett']['restart_policy']
+  env [
+    'PUID=1004',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+  ]
+  volumes node['hms']['jackett']['volumes']
+  port node['hms']['jackett']['port']
   action :run
 end
 
-docker_container 'sonarr' do
+docker_container node['hms']['sonarr']['container_name'] do
+  network_mode node['hms']['sonarr']['network_mode']
   repo 'linuxserver/sonarr'
-  restart_policy 'always'
-  env ['PUID=1006', 'PGID=1001', 'TZ="America/Chicago"']
-  volumes ['/home/sonarr:/config', '/home/downloads:/downloads', '/home/media:/media', '/home/data:/data']
-  port ['8989:8989/tcp', '9897:9897/tcp']
+  restart_policy node['hms']['sonarr']['restart_policy']
+  env [
+    'PUID=1003',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+  ]
+  volumes node['hms']['sonarr']['volumes']
+  port node['hms']['sonarr']['port']
   action :run
 end
 
-docker_container 'plexpy' do
+docker_container node['hms']['plexpy']['container_name'] do
+  network_mode node['hms']['plexpy']['network_mode']
   repo 'linuxserver/plexpy'
-  restart_policy 'always'
-  env ['PUID=119', 'PGID=1006', 'TZ="America/Chicago"']
-  volumes ['/home/plexpy:/config', '/home/plex/Library/Application\ Support/Plex\ Media\ Server/Logs:/logs:ro']
-  port ['8113:8181/tcp']
+  restart_policy node['hms']['plexpy']['restart_policy']
+  env [
+    'PUID=1005',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+    'HTTP_PORT=8180',
+  ]
+  volumes node['hms']['plexpy']['volumes']
+  port node['hms']['plexpy']['port']
+  action :run
+end
+
+docker_container node['hms']['headphones']['container_name'] do
+  network_mode node['hms']['headphones']['network_mode']
+  repo 'linuxserver/headphones'
+  restart_policy node['hms']['headphones']['restart_policy']
+  env [
+    'PUID=1006',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+  ]
+  volumes node['hms']['headphones']['volumes']
+  port node['hms']['headphones']['port']
+  action :run
+end
+
+docker_network 'pia_network' do
+  action :create
+end
+
+docker_container node['hms']['pia']['container_name'] do
+  sensitive true
+  network_mode node['hms']['pia']['network_mode']
+  repo 'colinhebert/pia-openvpn'
+  restart_policy node['hms']['pia']['restart_policy']
+  cap_add 'NET_ADMIN'
+  privileged true # set this to remove devices option.
+  dns node['hms']['pia']['dns']
+  env [
+    "REGION=#{node['hms']['pia']['region']}",
+    "USERNAME=#{pia_un}",
+    "PASSWORD=#{pia_passwd}",
+  ]
+  port node['hms']['pia']['port']
+  action :run
+end
+
+docker_container node['hms']['deluge']['container_name'] do
+  network_mode node['hms']['deluge']['network_mode']
+  repo 'linuxserver/deluge'
+  restart_policy node['hms']['deluge']['restart_policy']
+  env [
+    'PUID=1000',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+    'UMASK_SET=022',
+  ]
+  volumes node['hms']['deluge']['volumes']
+  action :run
+end
+
+# sabnzbd
+docker_container node['hms']['sabnzbd']['container_name'] do
+  network_mode node['hms']['sabnzbd']['network_mode']
+  repo 'linuxserver/sabnzbd'
+  restart_policy node['hms']['sabnzbd']['restart_policy']
+  env [
+    'PUID=1007',
+    "PGID=#{node['hms']['admin_group_gid']}",
+    "TZ=#{node['hms']['timezone']}",
+  ]
+  volumes node['hms']['sabnzbd']['volumes']
   action :run
 end
 
 # TODO: Install and configure Prometheus
 # TODO: Install and configure Grafana for Promeathus
 # TODO: Install and configure APC management tool
+# TODO: Install OSSEC
+
 # TODO: Configure firewall
-# TODO: Configure and enable SELinux
+# Had to run: iptables -I INPUT 4 -i docker0 -j ACCEPT for sonarr to speak to jackett. (Not likely needed anymore)
+# May not need now that they are all on host mode.
+
+# TODO: Configure and enable SELinux if possible, docker may not work.
