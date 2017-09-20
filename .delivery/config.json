@@ -4,9 +4,16 @@
     "name": "build_cookbook",
     "path": ".delivery/build_cookbook"
   },
-  "skip_phases": [],
+  "skip_phases": [
+    "unit"
+  ],
   "job_dispatch": {
     "version": "v2"
+  },
+  "delivery-truck": {
+    "lint": {
+      "enable_cookstyle": true
+    }
   },
   "dependencies": []
 }
