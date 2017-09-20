@@ -3,7 +3,9 @@
 # Recipe:: default
 #
 # Copyright:: 2017, The Authors, All Rights Reserved.
+
 include_recipe 'yum-epel'
+
 # execute 'yum_update_all' do
 #   command 'yum update -y'
 # end
