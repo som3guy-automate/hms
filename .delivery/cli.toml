@@ -1,7 +1,0 @@
-api_protocol = "https"
-enterprise = "default"
-git_port = "8989"
-organization = "som3guy-automate"
-pipeline = "master"
-server = "34.197.96.70"
-user = "admin"
